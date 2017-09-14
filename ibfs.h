@@ -64,7 +64,7 @@ If you require another license, please contact the above.
 #define MAX_ARCS_PER_NODE 4
 #define NULL_INDEX	std::numeric_limits<node_index_t>::max()
 #define CAST_TO_PTR(a) ((a) == NULL_INDEX ? NULL : &nodes[a])
-#define SAFE_SUBTRACT(a, b) ((node_index_t) ((a) == NULL ? NULL_INDEX : (a) - (b)))
+#define CAST_TO_INDEX(a) ((node_index_t) ((a) == NULL ? NULL_INDEX : (a) - nodes))
 
 class IBFSGraph
 {
@@ -73,41 +73,56 @@ public:
 
 	IBFSGraph();
 	~IBFSGraph();
-	void initSize(int numNodes, int numEdges);
-	void addEdge(int nodeIndexFrom, int nodeIndexTo, int capacity, int reverseCapacity);
-	void addNode(int nodeIndex, int capFromSource, int capToSink);
+	void initSize(node_index_t numNodes);
+	void addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, int capacity, int reverseCapacity);
+	void addNode(node_index_t nodeIndex, int capFromSource, int capToSink);
 	struct Arc;
 	void initGraph();
 	int computeMaxFlow();
 	int computeMaxFlow(bool allowIncrements);
 
-	int isNodeOnSrcSide(int nodeIndex, int freeNodeValue = 0);
+	int isNodeOnSrcSide(node_index_t nodeIndex, int freeNodeValue = 0);
 
 	struct Node;
 
 	struct Arc
 	{
 		node_index_t	head;
-		int				isRevResidual :1;
-		int				rCap :31;
+		int			isRevResidual :1;
+		int			rCap :31;
 
 		inline Arc* rev(Node *nodes) {
-			return &(nodes[head / MAX_ARCS_PER_NODE].arcs[head % MAX_ARCS_PER_NODE]);
+			char* thiz = ((char*) this);
+			Node *thiz_node =  (Node*) (thiz - (thiz - (char*) nodes) % sizeof(Node));
+			Node *head_node = &nodes[head];
+			for (int i = 0; i < MAX_ARCS_PER_NODE; ++i) {
+				if (head_node->arcs[i].head == thiz_node - nodes) {
+					return &head_node->arcs[i];
+				}
+			}
+			return NULL;
 		}
 	};
 
 	struct Node
 	{
-		int			lastAugTimestamp:30;     // 4
+		int			lastAugTimestamp:30;
 		int			isParentCurr:1;
-		int			isIncremental:1;
-		Arc			arcs[MAX_ARCS_PER_NODE]; // 8*4 = 32       | 36
-		int			arcsDegree;              // 4
-		Arc			*parent;                 // 8 + 4 * 2          | 56
+		int			isIncremental:1;			// 4
+		Arc			arcs[MAX_ARCS_PER_NODE];	// 8*4 = 32       | 36
+		Arc			*parent;
 		node_index_t firstSon;
-		node_index_t nextPtr;
+		node_index_t nextPtr;					// 8 + 4 * 4      | 60
 		int			label;	// label > 0: distance from s, label < 0: -distance from t
 		int			excess;	 // excess > 0: capacity from s, excess < 0: -capacity to t
+
+		int arcsDegree() {
+			int degree = 0;
+			while (degree < MAX_ARCS_PER_NODE && arcs[degree].head != NULL_INDEX) {
+				++degree;
+			}
+			return degree;
+		}
 	};
 
 private:
@@ -201,7 +216,7 @@ private:
 		}
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			x->nextPtr = SAFE_SUBTRACT(buckets[bucket], nodes);
+			x->nextPtr = CAST_TO_INDEX(buckets[bucket]);
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
 		}
@@ -255,7 +270,7 @@ private:
 		}
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			if ((x->nextPtr = SAFE_SUBTRACT(buckets[bucket], nodes)) != NULL_INDEX) IB_PREVPTR_3PASS(CAST_TO_PTR(x->nextPtr)) = SAFE_SUBTRACT(x, nodes);
+			if ((x->nextPtr = CAST_TO_INDEX(buckets[bucket])) != NULL_INDEX) IB_PREVPTR_3PASS(CAST_TO_PTR(x->nextPtr)) = CAST_TO_INDEX(x);
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
 		}
@@ -324,9 +339,9 @@ private:
 
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			IB_NEXTPTR_EXCESS(x) = SAFE_SUBTRACT(buckets[bucket], nodes);
+			IB_NEXTPTR_EXCESS(x) = CAST_TO_INDEX(buckets[bucket]);
 			if (buckets[bucket] != NULL) {
-				IB_PREVPTR_EXCESS(buckets[bucket]) = SAFE_SUBTRACT(x, nodes);
+				IB_PREVPTR_EXCESS(buckets[bucket]) = CAST_TO_INDEX(x);
 			}
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
@@ -391,8 +406,8 @@ private:
 	template <bool sTree> inline void orphanFree(Node *x) {
 		if (IB_EXCESSES && x->excess) {
 			x->label = (sTree ? -topLevelT : topLevelS);
-			if (sTree) activeT1.add(SAFE_SUBTRACT(x, nodes));
-			else activeS1.add(SAFE_SUBTRACT(x, nodes));
+			if (sTree) activeT1.add(CAST_TO_INDEX(x));
+			else activeS1.add(CAST_TO_INDEX(x));
 			x->isParentCurr = 0;
 		} else {
 			x->label = 0;
@@ -423,7 +438,7 @@ private:
 	void initNodes();
 };
 
-inline void IBFSGraph::addNode(int nodeIndex, int capSource, int capSink)
+inline void IBFSGraph::addNode(node_index_t nodeIndex, int capSource, int capSink)
 {
 	int f = nodes[nodeIndex].excess;
 	if (f > 0) {
@@ -439,17 +454,17 @@ inline void IBFSGraph::addNode(int nodeIndex, int capSource, int capSink)
 	nodes[nodeIndex].excess = capSource - capSink;
 }
 
-inline void IBFSGraph::addEdge(int nodeIndexFrom, int nodeIndexTo, int capacity, int reverseCapacity)
+inline void IBFSGraph::addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, int capacity, int reverseCapacity)
 {
-	int fromNextEdgeIndex = nodes[nodeIndexFrom].arcsDegree++;
-	int toNextEdgeIndex = nodes[nodeIndexTo].arcsDegree++;
+	int fromNextEdgeIndex = nodes[nodeIndexFrom].arcsDegree();
+	int toNextEdgeIndex = nodes[nodeIndexTo].arcsDegree();
 	assert (fromNextEdgeIndex < MAX_ARCS_PER_NODE && toNextEdgeIndex < MAX_ARCS_PER_NODE);
 
-	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].head = MAX_ARCS_PER_NODE * nodeIndexTo + toNextEdgeIndex;
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].head = nodeIndexTo;
 	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].rCap = capacity;
 	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].isRevResidual = (reverseCapacity != 0);
 
-	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].head = MAX_ARCS_PER_NODE * nodeIndexFrom + fromNextEdgeIndex;
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].head = nodeIndexFrom;
 	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].rCap = capacity;
 	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].isRevResidual = (reverseCapacity != 0);
 
@@ -459,7 +474,7 @@ inline void IBFSGraph::addEdge(int nodeIndexFrom, int nodeIndexTo, int capacity,
 	nodes[nodeIndexTo].label++;
 }
 
-inline int IBFSGraph::isNodeOnSrcSide(int nodeIndex, int freeNodeValue)
+inline int IBFSGraph::isNodeOnSrcSide(node_index_t nodeIndex, int freeNodeValue)
 {
 	if (nodes[nodeIndex].label == 0) {
 		return freeNodeValue;

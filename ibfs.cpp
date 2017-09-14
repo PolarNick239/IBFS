@@ -48,9 +48,9 @@ If you require another license, please contact the above.
 
 
 #define REMOVE_SIBLING(x, tmp) \
-	{ (tmp) = &nodes[nodes[(x)->parent->head / MAX_ARCS_PER_NODE].firstSon]; \
+	{ (tmp) = &nodes[nodes[(x)->parent->head].firstSon]; \
 	if ((tmp) == (x)) { \
-		nodes[(x)->parent->head / MAX_ARCS_PER_NODE].firstSon = (x)->nextPtr; \
+		nodes[(x)->parent->head].firstSon = (x)->nextPtr; \
 	} else { \
 		for (; &nodes[(tmp)->nextPtr] != (x); (tmp) = &nodes[(tmp)->nextPtr]); \
 		(tmp)->nextPtr = (x)->nextPtr; \
@@ -97,21 +97,13 @@ void IBFSGraph::initGraph()
 }
 
 
-void IBFSGraph::initSize(int numNodes, int numEdges)
+void IBFSGraph::initSize(node_index_t numNodes)
 {
-	size_t node_size = sizeof(Node);
-	size_t arc_size = sizeof(Arc);
-
-	std::cout << "Node size: " << node_size << std::endl;
-	std::cout << "Arc size: " << arc_size << std::endl;
-
 	// compute allocation size
 	unsigned long long nodeMemsize = (unsigned long long)sizeof(node_index_t)*(unsigned long long)(numNodes*3) +
 			(IB_EXCESSES ? ((unsigned long long)sizeof(node_index_t)*(unsigned long long)(numNodes*2)) : 0);
 	arcEnd = (Arc*) new char[nodeMemsize];
 	memset(arcEnd, 0, (unsigned long long)sizeof(char)*nodeMemsize);
-
-	std::cout << "nodeMemsize: " << (nodeMemsize >> 20) << " Mb" << std::endl;
 
 	// allocate nodes
 //	if (verbose) {
@@ -121,11 +113,19 @@ void IBFSGraph::initSize(int numNodes, int numEdges)
 	this->numNodes = numNodes;
 	nodes = new Node[numNodes+1];
 	memset(nodes, 0, sizeof(Node)*(numNodes+1));
+	for (size_t i = 0; i < numNodes; ++i) {
+		for (int j = 0; j < MAX_ARCS_PER_NODE; ++j) {
+			nodes[i].arcs[j].head = NULL_INDEX;
+		}
+	}
 	nodeEnd = nodes+numNodes;
 	active0.init((node_index_t*)(arcEnd));
 	activeS1.init((node_index_t*)(arcEnd) + numNodes);
 	activeT1.init((node_index_t*)(arcEnd) + (2*numNodes));
 	if (IB_EXCESSES) {
+		for (size_t i = 0; i < numNodes*2; ++i) {
+			((node_index_t*) arcEnd)[((size_t) numNodes)*3 + i] = NULL_INDEX;
+		}
 		ptrs = (node_index_t*)(arcEnd) + (3*numNodes);
 		excessBuckets.init(nodes, ptrs, numNodes);
 	}
@@ -155,10 +155,10 @@ void IBFSGraph::initNodes()
 		}
 		if (x->excess > 0) {
 			x->label = 1;
-			activeS1.add(SAFE_SUBTRACT(x, nodes));
+			activeS1.add(CAST_TO_INDEX(x));
 		} else {
 			x->label = -1;
-			activeT1.add(SAFE_SUBTRACT(x, nodes));
+			activeT1.add(CAST_TO_INDEX(x));
 		}
 	}
 }
@@ -178,7 +178,7 @@ template<bool sTree> int IBFSGraph::augmentPath(Node *x, int push)
 	int orphanMinLevel = (sTree ? topLevelS : topLevelT) + 1;
 
 	augTimestamp++;
-	for (; ; x=&nodes[a->head / MAX_ARCS_PER_NODE])
+	for (; ; x=&nodes[a->head])
 	{
 		if (x->excess) break;
 		a = x->parent;
@@ -277,7 +277,7 @@ template<bool sTree> int IBFSGraph::augmentExcess(Node *x, int push)
 		// advance
 		// a precondition determines that the first node on the path is not in excess buckets
 		// so only the next nodes may need to be removed from there
-		x = &nodes[a->head / MAX_ARCS_PER_NODE];
+		x = &nodes[a->head];
 		if (sTree ? (x->excess < 0) : (x->excess > 0)) excessBuckets.remove<sTree>(x);
 	}
 
@@ -344,7 +344,7 @@ void IBFSGraph::augment(Arc *bridge)
 	{
 		bottleneck = bottleneckS = bridge->rCap;
 		if (bottleneck != 1) {
-			for (x=&nodes[bridge->rev(nodes)->head / MAX_ARCS_PER_NODE]; ; x=&nodes[a->head / MAX_ARCS_PER_NODE])
+			for (x=&nodes[bridge->rev(nodes)->head]; ; x=&nodes[a->head])
 			{
 				if (x->excess) break;
 				a = x->parent;
@@ -356,12 +356,12 @@ void IBFSGraph::augment(Arc *bridge)
 				bottleneckS = x->excess;
 			}
 			if (IB_EXCESSES && x->label != 1) forceBottleneck = true;
-			if (x == &nodes[bridge->rev(nodes)->head / MAX_ARCS_PER_NODE]) bottleneck = bottleneckS;
+			if (x == &nodes[bridge->rev(nodes)->head]) bottleneck = bottleneckS;
 		}
 
 		if (bottleneck != 1) {
 			bottleneckT = bridge->rCap;
-			for (x=&nodes[bridge->head / MAX_ARCS_PER_NODE]; ; x=&nodes[a->head / MAX_ARCS_PER_NODE])
+			for (x=&nodes[bridge->head]; ; x=&nodes[a->head])
 			{
 				if (x->excess) break;
 				a = x->parent;
@@ -373,7 +373,7 @@ void IBFSGraph::augment(Arc *bridge)
 				bottleneckT = (-x->excess);
 			}
 			if (IB_EXCESSES && x->label != -1) forceBottleneck = true;
-			if (x == &nodes[bridge->head / MAX_ARCS_PER_NODE] && bottleneck > bottleneckT) bottleneck = bottleneckT;
+			if (x == &nodes[bridge->head] && bottleneck > bottleneckT) bottleneck = bottleneckT;
 
 			if (forceBottleneck) {
 				if (bottleneckS < bottleneckT) bottleneck = bottleneckS;
@@ -384,7 +384,7 @@ void IBFSGraph::augment(Arc *bridge)
 
 	// stats
 	if (IBSTATS) {
-		int augLen = (-(nodes[bridge->head / MAX_ARCS_PER_NODE].label)-1 + nodes[bridge->rev(nodes)->head / MAX_ARCS_PER_NODE].label-1 + 1);
+		int augLen = (-(nodes[bridge->head].label)-1 + nodes[bridge->rev(nodes)->head].label-1 + 1);
 	}
 
 	// augment connecting arc
@@ -397,7 +397,7 @@ void IBFSGraph::augment(Arc *bridge)
 	flow -= bottleneck;
 
 	// augment T
-	x = &nodes[bridge->head / MAX_ARCS_PER_NODE];
+	x = &nodes[bridge->head];
 	if (!IB_EXCESSES || bottleneck == 1 || forceBottleneck) {
 		minOrphanLevel = augmentPath<false>(x, bottleneck);
 		adoption<false>(minOrphanLevel, true);
@@ -408,7 +408,7 @@ void IBFSGraph::augment(Arc *bridge)
 	}
 
 	// augment S
-	x = &nodes[bridge->rev(nodes)->head / MAX_ARCS_PER_NODE];
+	x = &nodes[bridge->rev(nodes)->head];
 	if (!IB_EXCESSES || bottleneck == 1 || forceBottleneck) {
 		minOrphanLevel = augmentPath<true>(x, bottleneck);
 		adoption<true>(minOrphanLevel, true);
@@ -464,13 +464,13 @@ template<bool sTree> void IBFSGraph::adoption(int fromLevel, bool toTop)
 			x->isParentCurr = 1;
 		}
 		x->parent = NULL;
-		aEnd = (&x->arcs[x->arcsDegree]);
+		aEnd = (&x->arcs[x->arcsDegree()]);
 		if (x->label != (sTree ? 1 : -1))
 		{
 			minLabel = x->label - (sTree ? 1 : -1);
 			for (; a != aEnd; a++)
 			{
-				y = &nodes[a->head / MAX_ARCS_PER_NODE];
+				y = &nodes[a->head];
 				if ((sTree ? a->isRevResidual : a->rCap) != 0 && y->label == minLabel)
 				{
 					x->parent = a;
@@ -523,7 +523,7 @@ template<bool sTree> void IBFSGraph::adoption(int fromLevel, bool toTop)
 		minLabel = (sTree ? topLevelS : -topLevelT);
 		if (x->label != minLabel) for (a=(&x->arcs[0]); a != aEnd; a++)
 		{
-			y = &nodes[a->head / MAX_ARCS_PER_NODE];
+			y = &nodes[a->head];
 			if ((sTree ? a->isRevResidual : a->rCap) &&
 				// y->label != 0 ---> holds implicitly
 				(sTree ? (y->label > 0) : (y->label < 0)) &&
@@ -540,12 +540,12 @@ template<bool sTree> void IBFSGraph::adoption(int fromLevel, bool toTop)
 		//
 		if (x->parent != NULL) {
 			x->label = minLabel + (sTree ? 1 : -1);
-			ADD_SIBLING(x, &nodes[x->parent->head / MAX_ARCS_PER_NODE]);
+			ADD_SIBLING(x, &nodes[x->parent->head]);
 			// add to active list of the next growth phase
 			if (sTree) {
-				if (x->label == topLevelS) activeS1.add(SAFE_SUBTRACT(x, nodes));
+				if (x->label == topLevelS) activeS1.add(CAST_TO_INDEX(x));
 			} else {
-				if (x->label == -topLevelT) activeT1.add(SAFE_SUBTRACT(x, nodes));
+				if (x->label == -topLevelT) activeT1.add(CAST_TO_INDEX(x));
 			}
 			if (IB_EXCESSES && x->excess) excessBuckets.add<sTree>(x);
 		} else {
@@ -568,14 +568,14 @@ template <bool sTree> void IBFSGraph::adoption3Pass(int minBucket)
 	for (int level=minBucket; level <= orphan3PassBuckets.maxBucket; level++)
 	while ((x = orphan3PassBuckets.popFront(level)) != NULL)
 	{
-		aEnd = (&x->arcs[x->arcsDegree]);
+		aEnd = (&x->arcs[x->arcsDegree()]);
 
 		// pass 2: find lowest level parent
 		if (x->parent == NULL) {
 			minLabel = (sTree ? topLevelS : -topLevelT);
 			destLabel = x->label - (sTree ? 1 : -1);
 			for (a=(&x->arcs[0]); a != aEnd; a++) {
-				y = &nodes[a->head / MAX_ARCS_PER_NODE];
+				y = &nodes[a->head];
 				if ((sTree ? a->isRevResidual : a->rCap) &&
 					((sTree ? (y->excess > 0) : (y->excess < 0)) || y->parent != NULL) &&
 					(sTree ? (y->label > 0) : (y->label < 0)) &&
@@ -602,7 +602,7 @@ template <bool sTree> void IBFSGraph::adoption3Pass(int minBucket)
 		{
 			minLabel = x->label + (sTree ? 1 : -1);
 			for (a=(&x->arcs[0]); a != aEnd; a++) {
-				y = &nodes[a->head / MAX_ARCS_PER_NODE];
+				y = &nodes[a->head];
 
 				// lower potential sons
 				if ((sTree ? a->rCap : a->isRevResidual) &&
@@ -619,15 +619,15 @@ template <bool sTree> void IBFSGraph::adoption3Pass(int minBucket)
 		}
 
 		// relabel onto new parent
-		ADD_SIBLING(x, &nodes[x->parent->head / MAX_ARCS_PER_NODE]);
+		ADD_SIBLING(x, &nodes[x->parent->head]);
 		x->isParentCurr = 0;
 		if (IB_EXCESSES && x->excess) excessBuckets.add<sTree>(x);
 
 		// add to active list of the next growth phase
 		if (sTree) {
-			if (x->label == topLevelS) activeS1.add(SAFE_SUBTRACT(x, nodes));
+			if (x->label == topLevelS) activeS1.add(CAST_TO_INDEX(x));
 		} else {
-			if (x->label == -topLevelT) activeT1.add(SAFE_SUBTRACT(x, nodes));
+			if (x->label == -topLevelT) activeT1.add(CAST_TO_INDEX(x));
 		}
 	}
 
@@ -650,11 +650,11 @@ template<bool dirS> void IBFSGraph::growth()
 			continue;
 		}
 
-		aEnd = (&x->arcs[x->arcsDegree]);
+		aEnd = (&x->arcs[x->arcsDegree()]);
 		for (a=(&x->arcs[0]); a != aEnd; a++)
 		{
 			if ((dirS ? a->rCap : a->isRevResidual) == 0) continue;
-			y = &nodes[a->head / MAX_ARCS_PER_NODE];
+			y = &nodes[a->head];
 			if (y->label == 0)
 			{
 				// grow node x (attach y)
@@ -662,8 +662,8 @@ template<bool dirS> void IBFSGraph::growth()
 				y->label = x->label + (dirS ? 1 : -1);
 				y->parent = a->rev(nodes);
 				ADD_SIBLING(y, x);
-				if (dirS) activeS1.add(SAFE_SUBTRACT(y, nodes));
-				else activeT1.add(SAFE_SUBTRACT(y, nodes));
+				if (dirS) activeS1.add(CAST_TO_INDEX(y));
+				else activeT1.add(CAST_TO_INDEX(y));
 			}
 			else if (dirS ? (y->label < 0) : (y->label > 0))
 			{
@@ -697,10 +697,10 @@ template<bool sTree> void IBFSGraph::augmentIncrements()
 			x->isParentCurr = 0;
 			if (x->excess > 0) {
 				x->label = topLevelS;
-				activeS1.add(SAFE_SUBTRACT(x, nodes));
+				activeS1.add(CAST_TO_INDEX(x));
 			} else if (x->excess < 0) {
 				x->label = -topLevelT;
-				activeT1.add(SAFE_SUBTRACT(x, nodes));
+				activeT1.add(CAST_TO_INDEX(x));
 			}
 		}
 		else if ((sTree ? (x->excess <= 0) : (x->excess >= 0)) &&
