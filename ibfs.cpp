@@ -76,7 +76,6 @@ IBFSGraph::IBFSGraph()
 	topLevelS = topLevelT = 0;
 	flow = 0;
 	arcEnd = NULL;
-	tmpArcs = NULL;
 	ptrs = NULL;
 }
 
@@ -171,7 +170,7 @@ void IBFSGraph::initGraphFast()
 
 
 // @ret: minimum orphan level
-template<bool sTree> int IBFSGraph::augmentPath(Node *x, int push)
+template<bool sTree> int IBFSGraph::augmentPath(Node *x, capacity_t push)
 {
 	Node *y;
 	Arc *a;
@@ -182,21 +181,28 @@ template<bool sTree> int IBFSGraph::augmentPath(Node *x, int push)
 	{
 		if (x->excess) break;
 		a = x->parent;
+		Arc *reva = a->rev(nodes);
 		if (sTree) {
-			a->rCap += push;
-			a->rev(nodes)->isRevResidual = 1;
-			a->rev(nodes)->rCap -= push;
+			capacity_t rcap = a->getRCap() + push;
+			a->setRCap(rcap);
+			if (rcap > 0) {
+				reva->setIsRevResidual(1);
+			}
+			reva->setRCap(reva->getRCap() - push);
 		} else {
-			a->rev(nodes)->rCap += push;
-			a->isRevResidual = 1;
-			a->rCap -= push;
+			capacity_t rcap = reva->getRCap() + push;
+			reva->setRCap(rcap);
+			if (rcap > 0) {
+				a->setIsRevResidual(1);
+			}
+			a->setRCap(a->getRCap() - push);
 		}
 
 		// saturated?
-		if ((sTree ? (a->rev(nodes)->rCap) : (a->rCap)) == 0)
+		if ((sTree ? (reva->getRCap()) : (a->getRCap())) == 0)
 		{
-			if (sTree) a->isRevResidual = 0;
-			else a->rev(nodes)->isRevResidual = 0;
+			if (sTree) a->setIsRevResidual(0);
+			else reva->setIsRevResidual(0);
 			REMOVE_SIBLING(x,y);
 			orphanMinLevel = (sTree ? x->label : -x->label);
 			orphanBuckets.add<sTree>(x);
@@ -214,7 +220,7 @@ template<bool sTree> int IBFSGraph::augmentPath(Node *x, int push)
 
 
 // @ret: minimum level in which created an orphan
-template<bool sTree> int IBFSGraph::augmentExcess(Node *x, int push)
+template<bool sTree> int IBFSGraph::augmentExcess(Node *x, capacity_t push)
 {
 	Node *y;
 	Arc *a;
@@ -239,12 +245,13 @@ template<bool sTree> int IBFSGraph::augmentExcess(Node *x, int push)
 	while (sTree ? (x->excess <= 0) : (x->excess >= 0))
 	{
 		a = x->parent;
+		Arc *reva = a->rev(nodes);
 
 		// update excess and find next flow
-		if ((sTree ? (a->rev(nodes)->rCap) : (a->rCap)) < (sTree ? (push-x->excess) : (x->excess+push))) {
+		if ((sTree ? (reva->getRCap()) : (a->getRCap())) < (sTree ? (push-x->excess) : (x->excess+push))) {
 			// some excess remains, node is an orphan
-			x->excess += (sTree ? (a->rev(nodes)->rCap - push) : (push-a->rCap));
-			push = (sTree ? a->rev(nodes)->rCap : a->rCap);
+			x->excess += (sTree ? (reva->getRCap() - push) : (push-a->getRCap()));
+			push = (sTree ? reva->getRCap() : a->getRCap());
 		} else {
 			// all excess is pushed out, node may or may not be an orphan
 			push += (sTree ? -(x->excess) : x->excess);
@@ -254,20 +261,26 @@ template<bool sTree> int IBFSGraph::augmentExcess(Node *x, int push)
 		// push flow
 		// note: push != 0
 		if (sTree) {
-			a->rCap += push;
-			a->rev(nodes)->isRevResidual = 1;
-			a->rev(nodes)->rCap -= push;
+			capacity_t rcap = a->getRCap() + push;
+			a->setRCap(rcap);
+			if (rcap > 0) {
+				reva->setIsRevResidual(1);
+			}
+			reva->setRCap(reva->getRCap() - push);
 		} else {
-			a->rev(nodes)->rCap += push;
-			a->isRevResidual = 1;
-			a->rCap -= push;
+			capacity_t rcap = reva->getRCap() + push;
+			reva->setRCap(rcap);
+			if (rcap > 0) {
+				a->setIsRevResidual(1);
+			}
+			a->setRCap(a->getRCap() - push);
 		}
 
 		// saturated?
-		if ((sTree ? (a->rev(nodes)->rCap) : (a->rCap)) == 0)
+		if ((sTree ? (reva->getRCap()) : (a->getRCap())) == 0)
 		{
-			if (sTree) a->isRevResidual = 0;
-			else a->rev(nodes)->isRevResidual = 0;
+			if (sTree) a->setIsRevResidual(0);
+			else reva->setIsRevResidual(0);
 			REMOVE_SIBLING(x,y);
 			orphanMinLevel = (sTree ? x->label : -x->label);
 			orphanBuckets.add<sTree>(x);
@@ -322,7 +335,8 @@ void IBFSGraph::augment(Arc *bridge)
 {
 	Node *x, *y;
 	Arc *a;
-	int bottleneck, bottleneckT, bottleneckS, minOrphanLevel;
+	capacity_t bottleneck, bottleneckT, bottleneckS;
+	int minOrphanLevel;
 	bool forceBottleneck;
 
 	// must compute forceBottleneck once, so that it is constant throughout this method
@@ -342,14 +356,14 @@ void IBFSGraph::augment(Arc *bridge)
 	}
 	else
 	{
-		bottleneck = bottleneckS = bridge->rCap;
+		bottleneck = bottleneckS = bridge->getRCap();
 		if (bottleneck != 1) {
 			for (x=&nodes[bridge->rev(nodes)->head]; ; x=&nodes[a->head])
 			{
 				if (x->excess) break;
 				a = x->parent;
-				if (bottleneckS > a->rev(nodes)->rCap) {
-					bottleneckS = a->rev(nodes)->rCap;
+				if (bottleneckS > a->rev(nodes)->getRCap()) {
+					bottleneckS = a->rev(nodes)->getRCap();
 				}
 			}
 			if (bottleneckS > x->excess) {
@@ -360,13 +374,13 @@ void IBFSGraph::augment(Arc *bridge)
 		}
 
 		if (bottleneck != 1) {
-			bottleneckT = bridge->rCap;
+			bottleneckT = bridge->getRCap();
 			for (x=&nodes[bridge->head]; ; x=&nodes[a->head])
 			{
 				if (x->excess) break;
 				a = x->parent;
-				if (bottleneckT > a->rCap) {
-					bottleneckT = a->rCap;
+				if (bottleneckT > a->getRCap()) {
+					bottleneckT = a->getRCap();
 				}
 			}
 			if (bottleneckT > (-x->excess)) {
@@ -387,12 +401,17 @@ void IBFSGraph::augment(Arc *bridge)
 		int augLen = (-(nodes[bridge->head].label)-1 + nodes[bridge->rev(nodes)->head].label-1 + 1);
 	}
 
+	Arc *revbridge = bridge->rev(nodes);
+
 	// augment connecting arc
-	bridge->rev(nodes)->rCap += bottleneck;
-	bridge->isRevResidual = 1;
-	bridge->rCap -= bottleneck;
-	if (bridge->rCap == 0) {
-		bridge->rev(nodes)->isRevResidual = 0;
+	capacity_t rcap = revbridge->getRCap() + bottleneck;
+	revbridge->setRCap(rcap);
+	if (rcap > 0) {
+		bridge->setIsRevResidual(1);
+	}
+	bridge->setRCap(bridge->getRCap() - bottleneck);
+	if (bridge->getRCap() == 0) {
+		revbridge->setIsRevResidual(0);
 	}
 	flow -= bottleneck;
 
@@ -471,7 +490,7 @@ template<bool sTree> void IBFSGraph::adoption(int fromLevel, bool toTop)
 			for (; a != aEnd; a++)
 			{
 				y = &nodes[a->head];
-				if ((sTree ? a->isRevResidual : a->rCap) != 0 && y->label == minLabel)
+				if ((sTree ? a->getIsRevResidual() : a->getRCap()) != 0 && y->label == minLabel)
 				{
 					x->parent = a;
 					ADD_SIBLING(x,y);
@@ -524,7 +543,7 @@ template<bool sTree> void IBFSGraph::adoption(int fromLevel, bool toTop)
 		if (x->label != minLabel) for (a=(&x->arcs[0]); a != aEnd; a++)
 		{
 			y = &nodes[a->head];
-			if ((sTree ? a->isRevResidual : a->rCap) &&
+			if ((sTree ? a->getIsRevResidual() : a->getRCap()) &&
 				// y->label != 0 ---> holds implicitly
 				(sTree ? (y->label > 0) : (y->label < 0)) &&
 				(sTree ? (y->label < minLabel) : (y->label > minLabel)))
@@ -576,7 +595,7 @@ template <bool sTree> void IBFSGraph::adoption3Pass(int minBucket)
 			destLabel = x->label - (sTree ? 1 : -1);
 			for (a=(&x->arcs[0]); a != aEnd; a++) {
 				y = &nodes[a->head];
-				if ((sTree ? a->isRevResidual : a->rCap) &&
+				if ((sTree ? a->getIsRevResidual() : a->getRCap()) &&
 					((sTree ? (y->excess > 0) : (y->excess < 0)) || y->parent != NULL) &&
 					(sTree ? (y->label > 0) : (y->label < 0)) &&
 					(sTree ? (y->label < minLabel) : (y->label > minLabel)))
@@ -605,7 +624,7 @@ template <bool sTree> void IBFSGraph::adoption3Pass(int minBucket)
 				y = &nodes[a->head];
 
 				// lower potential sons
-				if ((sTree ? a->rCap : a->isRevResidual) &&
+				if ((sTree ? a->getRCap() : a->getIsRevResidual()) &&
 					(y->label == 0 ||
 					(sTree ? (minLabel < y->label) : (minLabel > y->label))))
 				{
@@ -653,7 +672,7 @@ template<bool dirS> void IBFSGraph::growth()
 		aEnd = (&x->arcs[x->arcsDegree()]);
 		for (a=(&x->arcs[0]); a != aEnd; a++)
 		{
-			if ((dirS ? a->rCap : a->isRevResidual) == 0) continue;
+			if ((dirS ? a->getRCap() : a->getIsRevResidual()) == 0) continue;
 			y = &nodes[a->head];
 			if (y->label == 0)
 			{
@@ -672,7 +691,7 @@ template<bool dirS> void IBFSGraph::growth()
 				if (x->label != (dirS ? (topLevelS-1) : -(topLevelT-1))) {
 					break;
 				}
-				if (dirS ? (a->rCap) : (a->isRevResidual)) a--;
+				if (dirS ? (a->getRCap()) : (a->getIsRevResidual())) a--;
 			}
 		}
 	}
@@ -704,7 +723,7 @@ template<bool sTree> void IBFSGraph::augmentIncrements()
 			}
 		}
 		else if ((sTree ? (x->excess <= 0) : (x->excess >= 0)) &&
-				(!x->parent || !(sTree ? x->parent->isRevResidual : x->parent->rCap)))
+				(!x->parent || !(sTree ? x->parent->getIsRevResidual() : x->parent->getRCap())))
 		{
 			//**** new orphan
 			if (x->parent) REMOVE_SIBLING(x,y);
@@ -732,17 +751,17 @@ template<bool sTree> void IBFSGraph::augmentIncrements()
 }
 
 
-int IBFSGraph::computeMaxFlow()
+IBFSGraph::capacity_t IBFSGraph::computeMaxFlow()
 {
 	return computeMaxFlow(true, false);
 }
 
-int IBFSGraph::computeMaxFlow(bool allowIncrements)
+IBFSGraph::capacity_t IBFSGraph::computeMaxFlow(bool allowIncrements)
 {
 	return computeMaxFlow(true, allowIncrements);
 }
 
-int IBFSGraph::computeMaxFlow(bool initialDirS, bool allowIncrements)
+IBFSGraph::capacity_t IBFSGraph::computeMaxFlow(bool initialDirS, bool allowIncrements)
 {
 	// incremental?
 	if (incIteration >= 1 && incList != NULL) {
@@ -771,7 +790,7 @@ int IBFSGraph::computeMaxFlow(bool initialDirS, bool allowIncrements)
 		if (dirS) growth<true>();
 		else growth<false>();
 		if (IBTEST) {
-			fprintf(stdout, "dirS=%d aug=%d   S %d / T %d   flow=%d\n",
+			fprintf(stdout, "dirS=%d aug=%d   S %d / T %d   flow=%f\n",
 					dirS, augTimestamp, uniqOrphansS, uniqOrphansT, flow);
 			fflush(stdout);
 		}

@@ -47,6 +47,7 @@ If you require another license, please contact the above.
 #include <string.h>
 #include <cassert>
 #include <limits>
+#include <cmath>
 
 
 #define IB_BOTTLENECK_ORIG 0
@@ -70,16 +71,17 @@ class IBFSGraph
 {
 	typedef		unsigned int node_index_t;
 public:
+	typedef		float capacity_t;
 
 	IBFSGraph();
 	~IBFSGraph();
 	void initSize(node_index_t numNodes);
-	void addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, int capacity, int reverseCapacity);
-	void addNode(node_index_t nodeIndex, int capFromSource, int capToSink);
+	void addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, capacity_t capacity, capacity_t reverseCapacity);
+	void addNode(node_index_t nodeIndex, capacity_t capFromSource, capacity_t capToSink);
 	struct Arc;
 	void initGraph();
-	int computeMaxFlow();
-	int computeMaxFlow(bool allowIncrements);
+	capacity_t computeMaxFlow();
+	capacity_t computeMaxFlow(bool allowIncrements);
 
 	int isNodeOnSrcSide(node_index_t nodeIndex, int freeNodeValue = 0);
 
@@ -88,8 +90,44 @@ public:
 	struct Arc
 	{
 		node_index_t	head;
-		int			isRevResidual :1;
-		int			rCap :31;
+#if 0
+		bool		isRevResidual_;
+		capacity_t	capacity_;
+
+		capacity_t	getRCap() {
+			return capacity_;
+		}
+
+		void	setRCap(capacity_t new_capacity) {
+			capacity_ = new_capacity;
+		}
+
+		bool	getIsRevResidual() {
+			return isRevResidual_;
+		}
+
+		void	setIsRevResidual(bool isRevResidual) {
+			isRevResidual_ = isRevResidual;
+		}
+#else
+		capacity_t	capacity;
+
+		capacity_t	getRCap() {
+			return (capacity_t) copysign(capacity, 1.0f);
+		}
+
+		void	setRCap(capacity_t new_capacity) {
+			capacity = (capacity_t) copysign(std::max((capacity_t) 0, new_capacity), capacity);
+		}
+
+		bool	getIsRevResidual() {
+			return std::signbit(capacity);
+		}
+
+		void	setIsRevResidual(bool isRevResidual) {
+			capacity = (capacity_t) copysign(capacity, (isRevResidual ? -1.0f : 1.0f));
+		}
+#endif
 
 		inline Arc* rev(Node *nodes) {
 			char* thiz = ((char*) this);
@@ -114,7 +152,7 @@ public:
 		node_index_t firstSon;
 		node_index_t nextPtr;					// 8 + 4 * 4      | 60
 		int			label;	// label > 0: distance from s, label < 0: -distance from t
-		int			excess;	 // excess > 0: capacity from s, excess < 0: -capacity to t
+		capacity_t	excess;	 // excess > 0: capacity from s, excess < 0: -capacity to t
 
 		int arcsDegree() {
 			int degree = 0;
@@ -128,15 +166,15 @@ public:
 private:
 	Arc *arcIter;
 	void augment(Arc *bridge);
-	template<bool sTree> int augmentPath(Node *x, int push);
-	template<bool sTree> int augmentExcess(Node *x, int push);
+	template<bool sTree> int augmentPath(Node *x, capacity_t push);
+	template<bool sTree> int augmentExcess(Node *x, capacity_t push);
 	template<bool sTree> void augmentExcesses();
 	template<bool sTree> void augmentIncrements();
 	template <bool sTree> void adoption(int fromLevel, bool toTop);
 	template <bool sTree> void adoption3Pass(int minBucket);
 	template <bool dirS> void growth();
 
-	int computeMaxFlow(bool trackChanges, bool initialDirS);
+	capacity_t computeMaxFlow(bool trackChanges, bool initialDirS);
 
 	// push relabel
 
@@ -386,7 +424,7 @@ private:
 	Arc		*arcEnd;
 	node_index_t	*ptrs;
 	int 	numNodes;
-	int		flow;
+	capacity_t		flow;
 	short 	augTimestamp;
 	int topLevelS, topLevelT;
 	ActiveList active0, activeS1, activeT1;
@@ -414,33 +452,13 @@ private:
 		}
 	}
 
-	//
-	// Initialization
-	//
-	struct TmpEdge
-	{
-		int		head;
-		int		tail;
-		int		cap;
-		int		revCap;
-	};
-	struct TmpArc
-	{
-		TmpArc		*rev;
-		int			cap;
-	};
-	TmpEdge	*tmpEdges, *tmpEdgeLast;
-	TmpArc	*tmpArcs;
-	bool isInitializedGraph() {
-		return arcEnd != NULL;
-	}
 	void initGraphFast();
 	void initNodes();
 };
 
-inline void IBFSGraph::addNode(node_index_t nodeIndex, int capSource, int capSink)
+inline void IBFSGraph::addNode(node_index_t nodeIndex, capacity_t capSource, capacity_t capSink)
 {
-	int f = nodes[nodeIndex].excess;
+	capacity_t f = nodes[nodeIndex].excess;
 	if (f > 0) {
 		capSource += f;
 	} else {
@@ -454,19 +472,19 @@ inline void IBFSGraph::addNode(node_index_t nodeIndex, int capSource, int capSin
 	nodes[nodeIndex].excess = capSource - capSink;
 }
 
-inline void IBFSGraph::addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, int capacity, int reverseCapacity)
+inline void IBFSGraph::addEdge(node_index_t nodeIndexFrom, node_index_t nodeIndexTo, capacity_t capacity, capacity_t reverseCapacity)
 {
 	int fromNextEdgeIndex = nodes[nodeIndexFrom].arcsDegree();
 	int toNextEdgeIndex = nodes[nodeIndexTo].arcsDegree();
 	assert (fromNextEdgeIndex < MAX_ARCS_PER_NODE && toNextEdgeIndex < MAX_ARCS_PER_NODE);
 
 	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].head = nodeIndexTo;
-	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].rCap = capacity;
-	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].isRevResidual = (reverseCapacity != 0);
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].setRCap(capacity);
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].setIsRevResidual(reverseCapacity != 0);
 
 	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].head = nodeIndexFrom;
-	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].rCap = capacity;
-	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].isRevResidual = (reverseCapacity != 0);
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].setRCap(reverseCapacity);
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].setIsRevResidual(capacity != 0);
 
 	// use label as a temporary storage
 	// to count the out degree of nodes
