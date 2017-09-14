@@ -45,6 +45,8 @@ If you require another license, please contact the above.
 
 #include <stdio.h>
 #include <string.h>
+#include <cassert>
+#include <limits>
 
 
 #define IB_BOTTLENECK_ORIG 0
@@ -59,11 +61,17 @@ If you require another license, please contact the above.
 #define IB_ALLOC_INIT_LEVELS 4096
 #define IB_DEBUG_INIT 0
 
+#define MAX_ARCS_PER_NODE 4
+#define NULL_INDEX	std::numeric_limits<node_index_t>::max()
+#define CAST_TO_PTR(a) ((a) == NULL_INDEX ? NULL : &nodes[a])
+#define SAFE_SUBTRACT(a, b) ((node_index_t) ((a) == NULL ? NULL_INDEX : (a) - (b)))
+
 class IBFSGraph
 {
+	typedef		unsigned int node_index_t;
 public:
-	enum IBFSInitMode { IB_INIT_FAST, IB_INIT_COMPACT };
-	IBFSGraph(IBFSInitMode initMode);
+
+	IBFSGraph();
 	~IBFSGraph();
 	void initSize(int numNodes, int numEdges);
 	void addEdge(int nodeIndexFrom, int nodeIndexTo, int capacity, int reverseCapacity);
@@ -79,21 +87,25 @@ public:
 
 	struct Arc
 	{
-		Node*		head;
-		Arc*		rev;
-		int			isRevResidual :1;
-		int			rCap :31;
+		node_index_t	head;
+		int				isRevResidual :1;
+		int				rCap :31;
+
+		inline Arc* rev(Node *nodes) {
+			return &(nodes[head / MAX_ARCS_PER_NODE].arcs[head % MAX_ARCS_PER_NODE]);
+		}
 	};
 
 	struct Node
 	{
-		int			lastAugTimestamp:30;
+		int			lastAugTimestamp:30;     // 4
 		int			isParentCurr:1;
 		int			isIncremental:1;
-		Arc			*firstArc;
-		Arc			*parent;
-		Node		*firstSon;
-		Node		*nextPtr;
+		Arc			arcs[MAX_ARCS_PER_NODE]; // 8*4 = 32       | 36
+		int			arcsDegree;              // 4
+		Arc			*parent;                 // 8 + 4 * 2          | 56
+		node_index_t firstSon;
+		node_index_t nextPtr;
 		int			label;	// label > 0: distance from s, label < 0: -distance from t
 		int			excess;	 // excess > 0: capacity from s, excess < 0: -capacity to t
 	};
@@ -120,22 +132,22 @@ private:
 			list = NULL;
 			len = 0;
 		}
-		inline void init(Node **mem) {
+		inline void init(node_index_t *mem) {
 			list = mem;
 			len = 0;
 		}
 		inline void clear() {
 			len = 0;
 		}
-		inline void add(Node* x) {
+		inline void add(node_index_t x) {
 			list[len] = x;
 			len++;
 		}
-		inline Node* pop() {
+		inline node_index_t pop() {
 			len--;
 			return list[len];
 		}
-		inline Node** getEnd() {
+		inline node_index_t* getEnd() {
 			return list+len;
 		}
 		inline static void swapLists(ActiveList *a, ActiveList *b) {
@@ -143,7 +155,7 @@ private:
 			(*a) = (*b);
 			(*b) = tmp;
 		}
-		Node **list;
+		node_index_t *list;
 		int len;
 	};
 
@@ -189,14 +201,14 @@ private:
 		}
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			x->nextPtr = buckets[bucket];
+			x->nextPtr = SAFE_SUBTRACT(buckets[bucket], nodes);
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
 		}
 		inline Node* popFront(int bucket) {
 			Node *x;
 			if ((x = buckets[bucket]) == NULL) return NULL;
-			buckets[bucket] = x->nextPtr;
+			buckets[bucket] = CAST_TO_PTR(x->nextPtr);
 			return x;
 		}
 
@@ -243,26 +255,26 @@ private:
 		}
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			if ((x->nextPtr = buckets[bucket]) != NULL) IB_PREVPTR_3PASS(x->nextPtr) = x;
+			if ((x->nextPtr = SAFE_SUBTRACT(buckets[bucket], nodes)) != NULL_INDEX) IB_PREVPTR_3PASS(CAST_TO_PTR(x->nextPtr)) = SAFE_SUBTRACT(x, nodes);
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
 		}
 		inline Node* popFront(int bucket) {
 			Node *x = buckets[bucket];
 			if (x == NULL) return NULL;
-			buckets[bucket] = x->nextPtr;
-			IB_PREVPTR_3PASS(x) = NULL;
+			buckets[bucket] = CAST_TO_PTR(x->nextPtr);
+			IB_PREVPTR_3PASS(x) = NULL_INDEX;
 			return x;
 		}
 		template <bool sTree> inline void remove(Node *x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
 			if (buckets[bucket] == x) {
-				buckets[bucket] = x->nextPtr;
+				buckets[bucket] = CAST_TO_PTR(x->nextPtr);
 			} else {
-				IB_PREVPTR_3PASS(x)->nextPtr = x->nextPtr;
-				if (x->nextPtr != NULL) IB_PREVPTR_3PASS(x->nextPtr) = IB_PREVPTR_3PASS(x);
+				nodes[IB_PREVPTR_3PASS(x)].nextPtr = x->nextPtr;
+				if (x->nextPtr != NULL_INDEX) IB_PREVPTR_3PASS(CAST_TO_PTR(x->nextPtr)) = IB_PREVPTR_3PASS(x);
 			}
-			IB_PREVPTR_3PASS(x) = NULL;
+			IB_PREVPTR_3PASS(x) = NULL_INDEX;
 		}
 		inline bool isEmpty(int bucket) {
 			return buckets[bucket] == NULL;
@@ -278,11 +290,12 @@ private:
 	{
 	public:
 		inline ExcessBuckets() {
-			buckets = ptrs = NULL;
+			buckets = NULL;
+			ptrs = NULL;
 			nodes = NULL;
 			allocLevels = maxBucket = minBucket = -1;
 		}
-		inline void init(Node *a_nodes, Node **a_ptrs, int numNodes) {
+		inline void init(Node *a_nodes, node_index_t *a_ptrs, int numNodes) {
 			nodes = a_nodes;
 			allocLevels = numNodes/8;
 			if (allocLevels < IB_ALLOC_INIT_LEVELS) {
@@ -311,9 +324,9 @@ private:
 
 		template <bool sTree> inline void add(Node* x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
-			IB_NEXTPTR_EXCESS(x) = buckets[bucket];
+			IB_NEXTPTR_EXCESS(x) = SAFE_SUBTRACT(buckets[bucket], nodes);
 			if (buckets[bucket] != NULL) {
-				IB_PREVPTR_EXCESS(buckets[bucket]) = x;
+				IB_PREVPTR_EXCESS(buckets[bucket]) = SAFE_SUBTRACT(x, nodes);
 			}
 			buckets[bucket] = x;
 			if (bucket > maxBucket) maxBucket = bucket;
@@ -322,16 +335,16 @@ private:
 		inline Node* popFront(int bucket) {
 			Node *x = buckets[bucket];
 			if (x == NULL) return NULL;
-			buckets[bucket] = IB_NEXTPTR_EXCESS(x);
+			buckets[bucket] = CAST_TO_PTR(IB_NEXTPTR_EXCESS(x));
 			return x;
 		}
 		template <bool sTree> inline void remove(Node *x) {
 			int bucket = (sTree ? (x->label) : (-x->label));
 			if (buckets[bucket] == x) {
-				buckets[bucket] = IB_NEXTPTR_EXCESS(x);
+				buckets[bucket] = CAST_TO_PTR(IB_NEXTPTR_EXCESS(x));
 			} else {
-				IB_NEXTPTR_EXCESS(IB_PREVPTR_EXCESS(x)) = IB_NEXTPTR_EXCESS(x);
-				if (IB_NEXTPTR_EXCESS(x) != NULL) IB_PREVPTR_EXCESS(IB_NEXTPTR_EXCESS(x)) = IB_PREVPTR_EXCESS(x);
+				IB_NEXTPTR_EXCESS(CAST_TO_PTR(IB_PREVPTR_EXCESS(x))) = IB_NEXTPTR_EXCESS(x);
+				if (IB_NEXTPTR_EXCESS(x) != NULL_INDEX) IB_PREVPTR_EXCESS(CAST_TO_PTR(IB_NEXTPTR_EXCESS(x))) = IB_PREVPTR_EXCESS(x);
 			}
 		}
 		inline void incMaxBucket(int bucket) {
@@ -346,7 +359,7 @@ private:
 		}
 
 		Node **buckets;
-		Node **ptrs;
+		node_index_t *ptrs;
 		int maxBucket;
 		int minBucket;
 		Node *nodes;
@@ -355,8 +368,8 @@ private:
 
 	// members
 	Node	*nodes, *nodeEnd;
-	Arc		*arcs, *arcEnd;
-	Node	**ptrs;
+	Arc		*arcEnd;
+	node_index_t	*ptrs;
 	int 	numNodes;
 	int		flow;
 	short 	augTimestamp;
@@ -378,8 +391,8 @@ private:
 	template <bool sTree> inline void orphanFree(Node *x) {
 		if (IB_EXCESSES && x->excess) {
 			x->label = (sTree ? -topLevelT : topLevelS);
-			if (sTree) activeT1.add(x);
-			else activeS1.add(x);
+			if (sTree) activeT1.add(SAFE_SUBTRACT(x, nodes));
+			else activeS1.add(SAFE_SUBTRACT(x, nodes));
 			x->isParentCurr = 0;
 		} else {
 			x->label = 0;
@@ -401,15 +414,12 @@ private:
 		TmpArc		*rev;
 		int			cap;
 	};
-	char	*memArcs;
 	TmpEdge	*tmpEdges, *tmpEdgeLast;
 	TmpArc	*tmpArcs;
 	bool isInitializedGraph() {
-		return memArcs != NULL;
+		return arcEnd != NULL;
 	}
-	IBFSInitMode initMode;
 	void initGraphFast();
-	void initGraphCompact();
 	void initNodes();
 };
 
@@ -431,11 +441,17 @@ inline void IBFSGraph::addNode(int nodeIndex, int capSource, int capSink)
 
 inline void IBFSGraph::addEdge(int nodeIndexFrom, int nodeIndexTo, int capacity, int reverseCapacity)
 {
-	tmpEdgeLast->tail = nodeIndexFrom;
-	tmpEdgeLast->head = nodeIndexTo;
-	tmpEdgeLast->cap = capacity;
-	tmpEdgeLast->revCap = reverseCapacity;
-	tmpEdgeLast++;
+	int fromNextEdgeIndex = nodes[nodeIndexFrom].arcsDegree++;
+	int toNextEdgeIndex = nodes[nodeIndexTo].arcsDegree++;
+	assert (fromNextEdgeIndex < MAX_ARCS_PER_NODE && toNextEdgeIndex < MAX_ARCS_PER_NODE);
+
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].head = MAX_ARCS_PER_NODE * nodeIndexTo + toNextEdgeIndex;
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].rCap = capacity;
+	nodes[nodeIndexFrom	].arcs[fromNextEdgeIndex].isRevResidual = (reverseCapacity != 0);
+
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].head = MAX_ARCS_PER_NODE * nodeIndexFrom + fromNextEdgeIndex;
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].rCap = capacity;
+	nodes[nodeIndexTo	].arcs[toNextEdgeIndex	].isRevResidual = (reverseCapacity != 0);
 
 	// use label as a temporary storage
 	// to count the out degree of nodes
