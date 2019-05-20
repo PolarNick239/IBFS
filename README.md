@@ -7,7 +7,7 @@ This is the modified version of IBFS solver for max-flow min-cut problem:
  - Number of edges from each node limited to ```MAX_ARCS_PER_NODE``` (MAX_ARCS_PER_NODE=4 tested - useful for Delaunay tetrahedralization, dinamic number of edges can be recovered)
  - Some functions were removed because I didn't need them, but they can be recovered
 
-Original IBFS site - http://www.cs.tau.ac.il/~sagihed/ibfs/
+Original IBFS site - [http://www.cs.tau.ac.il/~sagihed/ibfs/](http://web.archive.org/web/20170703042834/http://www.cs.tau.ac.il/~sagihed/ibfs/)
 
 # Papers
 
@@ -25,4 +25,6 @@ This software can be used for research purposes only.
 
 If you use this software for research purposes, you should cite the aforementioned papers in any resulting publication and appropriately credit it.
 
-If you require another license, please contact authors as described on site of original IBFS [site](http://www.cs.tau.ac.il/~sagihed/ibfs/code.html). **But note that the price is VERY high.**
+If you require another license, please contact authors as described on site of original IBFS [site](http://web.archive.org/web/20170703042834/http://www.cs.tau.ac.il/~sagihed/ibfs/). **But note that the price is VERY high.**
+
+If you need good alternative - BK-solver is great and cheap for commercial usage. See [**fork**](https://github.com/PolarNick239/bk_maxflow) with lower memory consumption.
